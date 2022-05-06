@@ -7,11 +7,6 @@ import (
 	"os/exec"
 )
 
-func bat() ([]byte, error) {
-	cmd := exec.Command("bat", "-f", "--theme", "base16", "cx.go")
-	return cmd.Output()
-}
-
 func borders() {
 	B := &tview.Borders
 	B.TopRight = tview.BoxDrawingsLightArcDownAndLeft
@@ -34,7 +29,8 @@ func main() {
 	preview := NewPreview().Start()
 	log.SetOutput(preview)
 	go func() {
-		txt, err := bat()
+		cmd := exec.Command("bat", "-f", "--theme", "base16", "cx.go")
+		txt, err := cmd.Output()
 		if err != nil {
 			log.Fatalln("bat error", err)
 		}
@@ -48,12 +44,14 @@ func main() {
 
 	themer.Done(func(theme string) {
 		preview.Cancel()
-		model := Model{}.New(themeMap[theme])
-		cons := new(Console).Init(model)
+		palette := themeMap[theme]
+		cons := new(Console).Init(palette)
 		flex.Clear().
 			AddItem(cons, 0, 1, true).
 			AddItem(preview, 0, 1, false)
-		app.SetFocus(cons)
+
+		app.SetFocus(flex)
+		preview.Start()
 	})
 
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {

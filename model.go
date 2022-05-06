@@ -1,14 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"github.com/gdamore/tcell/v2"
 	"image/color"
+	"os"
+	"strconv"
 )
 
-type Cprop uint8
+type cprop8 uint8
 
 const (
-	Y Cprop = 1 + iota
+	Y cprop8 = 1 + iota
 	U
 	V
 	R
@@ -16,22 +19,23 @@ const (
 	B
 )
 
-var propNames = map[Cprop]struct {
-	rune
+type DispName struct {
+	abbr string
 	string
-}{
-	Y: {'Y', "Luma"},
-	U: {'U', "Chroma-U"},
-	V: {'V', "Chroma-V"},
-	R: {'R', "Red"},
-	G: {'G', "Green"},
-	B: {'B', "Blue"},
 }
 
-type Cindex uint8
+var propNames = map[cprop8]DispName{
+	Y: {"Y", "Luma"},
+	U: {"Cb", "Chroma-Blue"},
+	V: {"Cr", "Chroma-Red"},
+	R: {"R", "Red"},
+	G: {"G", "Green"},
+	B: {"B", "Blue"},
+}
 
+// classic nourishing ANSI names.
 const (
-	Black Cindex = 0 + iota
+	Black = tcell.ColorBlack + iota
 	Red
 	Green
 	Yellow
@@ -48,71 +52,51 @@ const (
 	BrightMagenta
 	BrightCyan
 	BrightWhite
-
-	Cind_ENDPALETTE
-
-	Foreground
+)
+const (
+	Foreground = tcell.ColorReset + 1 + iota
 	Background
-
-	Cind_COUNT
 )
 
-var cmap = map[Cindex]struct {
-	string
-	tcell.Color
-}{
-	Black:         {"black", tcell.ColorBlack},
-	Red:           {"red", tcell.ColorMaroon},
-	Green:         {"green", tcell.ColorGreen},
-	Yellow:        {"yellow", tcell.ColorOlive},
-	Blue:          {"blue", tcell.ColorNavy},
-	Magenta:       {"magenta", tcell.ColorPurple},
-	Cyan:          {"cyan", tcell.ColorTeal},
-	White:         {"white", tcell.ColorSilver},
-	BrightBlack:   {"bright-black", tcell.ColorGray},
-	BrightRed:     {"bright-red", tcell.ColorRed},
-	BrightGreen:   {"bright-green", tcell.ColorLime},
-	BrightYellow:  {"bright-yellow", tcell.ColorYellow},
-	BrightBlue:    {"bright-blue", tcell.ColorBlue},
-	BrightMagenta: {"bright-magenta", tcell.ColorFuchsia},
-	BrightCyan:    {"bright-cyan", tcell.ColorAqua},
-	BrightWhite:   {"bright-white", tcell.ColorWhite},
+var cNames = map[tcell.Color]DispName{
+	Black:         {"k", "black"},
+	Red:           {"r", "red"},
+	Green:         {"g", "green"},
+	Yellow:        {"y", "yellow"},
+	Blue:          {"b", "blue"},
+	Magenta:       {"m", "magenta"},
+	Cyan:          {"c", "cyan"},
+	White:         {"w", "white"},
+	BrightBlack:   {"K", "bright-black"},
+	BrightRed:     {"R", "bright-red"},
+	BrightGreen:   {"G", "bright-green"},
+	BrightYellow:  {"Y", "bright-yellow"},
+	BrightBlue:    {"B", "bright-blue"},
+	BrightMagenta: {"M", "bright-magenta"},
+	BrightCyan:    {"C", "bright-cyan"},
+	BrightWhite:   {"W", "bright-white"},
+
+	Foreground: {"fg", "foreground"},
+	Background: {"bg", "background"},
 }
 
-func (p Cprop) Rune() rune {
-	return propNames[p].rune
+func (p cprop8) Abbr() string {
+	return propNames[p].abbr
 }
-
-func (p Cprop) String() string {
+func (p cprop8) String() string {
 	return propNames[p].string
 }
 
-func (i Cindex) String() string {
-	return cmap[i].string
+type bColor struct {
+	color.RGBA
+	color.YCbCr
 }
 
-func (i Cindex) Color() tcell.Color {
-	return cmap[i].Color
+type Theme map[tcell.Color]bColor
+type Selection struct {
+	Theme
+	sel []tcell.Color
 }
-
-var cind_all [Cind_ENDPALETTE]Cindex
-
-func CindAll() []Cindex {
-	if cind_all[1] != 0 {
-		return cind_all[:]
-	}
-	for i := 0; i < len(cind_all); i++ {
-		cind_all[i] = Cindex(i)
-	}
-	return cind_all[:]
-}
-
-type Model struct {
-	rgb [Cind_COUNT]color.RGBA
-	yuv [Cind_COUNT]color.YCbCr
-}
-
-type Pvect [Cind_COUNT]uint8
 
 func toYUV(c color.Color) color.YCbCr {
 	return color.YCbCrModel.Convert(c).(color.YCbCr)
@@ -122,142 +106,200 @@ func toRGB(c color.Color) color.RGBA {
 	return color.RGBAModel.Convert(c).(color.RGBA)
 }
 
-func (m *Model) Theme() *Theme {
-	var palette []color.RGBA
-	for i, c := range m.rgb {
-		if i >= int(Cind_ENDPALETTE) {
-			break
+func (p Theme) Init(t []color.Color, fg, bg color.Color) Theme {
+	for i, c := range t {
+		p[tcell.ColorValid+tcell.Color(i)] = Bcolor(c)
+	}
+	p[Foreground] = Bcolor(fg)
+	p[Background] = Bcolor(bg)
+
+	return p
+}
+
+func (t Theme) Copy() Theme {
+	tc := make(Theme)
+	for c, bc := range t {
+		tc[c] = bc
+	}
+	return tc
+}
+
+func (p Theme) From(hex []string, fg, bg string) Theme {
+	var t []color.Color
+	for _, h := range hex {
+		t = append(t, FromHex(h))
+	}
+
+	fg_c := FromHex(fg)
+	bg_c := FromHex(bg)
+
+	return p.Init(t, fg_c, bg_c)
+}
+
+func FromHex(hex string) color.Color {
+	var runes []rune
+	for _, r := range hex {
+		if (r >= '0' && r <= '9') ||
+			(r >= 'A' && r <= 'F') ||
+			(r >= 'a' && r <= 'f') {
+			runes = append(runes, r)
 		}
-		palette = append(palette, c)
 	}
-	return &Theme{
-		palette:    palette,
-		foreground: m.rgb[Foreground],
-		background: m.rgb[Background],
+	if len(runes) != 6 {
+		panic(fmt.Errorf("bad hex color %s (%v)", hex, runes))
 	}
+	val, err := strconv.ParseUint(string(runes), 16, 32)
+	if err != nil {
+		panic("bad hex color")
+	}
+	return color.RGBA{uint8(val >> 16), uint8(val >> 8), uint8(val), 0xff}
 }
 
-func (m Model) New(t Theme) *Model {
-	for i, c := range t.palette {
-		if i >= int(Cind_ENDPALETTE) {
-			break
+func initc(code string, color color.RGBA) {
+	os.Stderr.WriteString(
+		fmt.Sprintf(
+			"\x1b]%s;rgb:%02x/%02x/%02x\x1b\\",
+			code, color.R, color.G, color.B,
+		),
+	)
+}
+
+func (t Theme) SetTheme() {
+	for c, bc := range t {
+		switch c {
+		case Foreground:
+			initc(fmt.Sprintf("%d", 10), bc.RGBA)
+		case Background:
+			initc(fmt.Sprintf("%d", 11), bc.RGBA)
+		default:
+			index := c - tcell.ColorValid
+			initc(fmt.Sprintf("4;%d", index), bc.RGBA)
 		}
-		m.rgb[i] = c
-	}
-
-	m.rgb[Foreground] = t.foreground
-	m.rgb[Background] = t.background
-
-	m.genYUV()
-
-	return &m
-}
-
-func (m *Model) genRGB() {
-	for i, c := range m.yuv {
-		m.rgb[i] = toRGB(c)
 	}
 }
 
-func (m *Model) genYUV() {
-	for i, c := range m.rgb {
-		m.yuv[i] = toYUV(c)
+func (b *bColor) Access(prop cprop8) uint8 {
+	switch prop {
+	case Y:
+		return b.Y
+	case U:
+		return b.Cb
+	case V:
+		return b.Cr
+	case R:
+		return b.R
+	case G:
+		return b.G
+	case B:
+		return b.B
 	}
+	panic("bad access")
 }
 
-func access(c color.Color, p Cprop) (uint8, bool) {
+func (b *bColor) Set(c color.Color) *bColor {
+	*b = Bcolor(c)
+	return b
+}
+
+func Bcolor(c color.Color) bColor {
 	switch c0 := c.(type) {
 	case color.YCbCr:
-		switch p {
-		case Y:
-			return c0.Y, true
-		case U:
-			return c0.Cb, true
-		case V:
-			return c0.Cr, true
-		}
+		return bColor{toRGB(c0), c0}
 	case color.RGBA:
-		switch p {
-		case R:
-			return c0.R, true
-		case G:
-			return c0.G, true
-		case B:
-			return c0.B, true
-		}
+		return bColor{c0, toYUV(c0)}
+	default:
+		return bColor{toRGB(c0), toYUV(c0)}
 	}
-	return 0, false
 }
 
 func first[T any](first T, _ ...any) T {
 	return first
 }
 
-func (m *Model) Access(p Cprop, i Cindex) (uint8, bool) {
-	switch p {
-	case Y, U, V:
-		return access(m.yuv[i], p)
-	case R, G, B:
-		return access(m.rgb[i], p)
+func (t Theme) Select(mask uint64) Selection {
+	var sel []tcell.Color
+
+	fgMask := uint64(1 << 63)
+	bgMask := fgMask >> 1
+	restMask := ^uint64(0)
+
+	for c := Black; ; c++ {
+		if _, found := t[c]; !found {
+			break
+		}
+
+		off := uint64(c - Black)
+		if mask&(1<<off) != 0 {
+			sel = append(sel, c)
+		}
+
+		restMask <<= 1
+		if (mask&restMask)%bgMask == 0 {
+			break
+		}
 	}
-	return 0, false
+
+	if mask&fgMask != 0 {
+		sel = append(sel, Foreground)
+	}
+	if mask&bgMask != 0 {
+		sel = append(sel, Background)
+	}
+
+	return Selection{t, sel}
 }
 
-func (m *Model) Update(p Cprop, a *Pvect) {
-	switch p {
-	case Y, U, V:
-		for i, c := range m.yuv {
-			a[i], _ = access(c, p)
-		}
-	case R, G, B:
-		for i, c := range m.rgb {
-			a[i], _ = access(c, p)
-		}
+func (s Selection) Iter() []bColor {
+	var v []bColor
+	for _, c := range s.sel {
+		v = append(v, s.Theme[c])
 	}
+	return v
 }
 
-func (m *Model) Adjust(p Cprop, sel []Cindex, adj int) {
-	if adj == 0 {
-		return
-	}
-	if sel == nil {
-		sel = CindAll()
+func (s Selection) Adjust(prop cprop8, adj int) Selection {
+	if adj == 0 || s.sel == nil {
+		return s
 	}
 
-	for _, i := range sel {
-		if i >= Cind_ENDPALETTE {
-			panic("bad selection")
-		}
+	for _, c := range s.sel {
+		b := s.Theme[c]
 
 		var ptr *uint8
-		switch p {
+		switch prop {
 		case Y:
-			ptr = &m.yuv[i].Y
+			ptr = &b.Y
 		case U:
-			ptr = &m.yuv[i].Cb
+			ptr = &b.Cb
 		case V:
-			ptr = &m.yuv[i].Cr
+			ptr = &b.Cr
 		case R:
-			ptr = &m.rgb[i].R
+			ptr = &b.R
 		case G:
-			ptr = &m.rgb[i].G
+			ptr = &b.G
 		case B:
-			ptr = &m.rgb[i].B
+			ptr = &b.B
 		}
 
 		// stupid simple
 		val := int(*ptr) + adj
 		if val < 0 {
-			val = 0
+			*ptr = 0
+		} else if val > int(uint8(val)) {
+			*ptr = ^uint8(0)
+		} else {
+			*ptr = uint8(val)
 		}
-		*ptr = uint8(val)
+
+		switch prop {
+		case Y, U, V:
+			b.Set(b.YCbCr)
+		case R, G, B:
+			b.Set(b.RGBA)
+		}
+
+		s.Theme[c] = b
 	}
 
-	switch p {
-	case Y, U, V:
-		m.genRGB()
-
-	case R, G, B:
-		m.genYUV()
-	}
+	return s
 }
