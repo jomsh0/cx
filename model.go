@@ -12,8 +12,8 @@ type cprop8 uint8
 
 const (
 	Y cprop8 = 1 + iota
-	U
-	V
+	Cb
+	Cr
 	R
 	G
 	B
@@ -25,12 +25,12 @@ type DispName struct {
 }
 
 var propNames = map[cprop8]DispName{
-	Y: {"Y", "Luma"},
-	U: {"Cb", "Chroma-Blue"},
-	V: {"Cr", "Chroma-Red"},
-	R: {"R", "Red"},
-	G: {"G", "Green"},
-	B: {"B", "Blue"},
+	Y:  {"Y′", "luma"},
+	Cb: {"Cb", "chroma-blue"},
+	Cr: {"Cr", "chroma-red"},
+	R:  {"R", "red"},
+	G:  {"G", "green"},
+	B:  {"B", "blue"},
 }
 
 // classic nourishing ANSI names.
@@ -93,10 +93,7 @@ type bColor struct {
 }
 
 type Theme map[tcell.Color]bColor
-type Selection struct {
-	Theme
-	sel []tcell.Color
-}
+type CMask uint64
 
 func toYUV(c color.Color) color.YCbCr {
 	return color.YCbCrModel.Convert(c).(color.YCbCr)
@@ -164,7 +161,7 @@ func initc(code string, color color.RGBA) {
 	)
 }
 
-func (t Theme) SetTheme() {
+func (t Theme) Apply() Theme {
 	for c, bc := range t {
 		switch c {
 		case Foreground:
@@ -176,15 +173,16 @@ func (t Theme) SetTheme() {
 			initc(fmt.Sprintf("4;%d", index), bc.RGBA)
 		}
 	}
+	return t
 }
 
-func (b *bColor) Access(prop cprop8) uint8 {
+func (b bColor) Access(prop cprop8) uint8 {
 	switch prop {
 	case Y:
 		return b.Y
-	case U:
+	case Cb:
 		return b.Cb
-	case V:
+	case Cr:
 		return b.Cr
 	case R:
 		return b.R
@@ -196,9 +194,42 @@ func (b *bColor) Access(prop cprop8) uint8 {
 	panic("bad access")
 }
 
-func (b *bColor) Set(c color.Color) *bColor {
-	*b = Bcolor(c)
-	return b
+func (b bColor) Set(c color.Color) bColor {
+	return Bcolor(c)
+}
+
+func (b bColor) SetProp(prop cprop8, val uint8) bColor {
+	switch prop {
+	case Y:
+		b.Y = val
+	case Cb:
+		b.Cb = val
+	case Cr:
+		b.Cr = val
+	case R:
+		b.R = val
+	case G:
+		b.G = val
+	case B:
+		b.B = val
+	}
+	switch prop {
+	case Y, Cb, Cr:
+		return Bcolor(b.YCbCr)
+	case R, G, B:
+		return Bcolor(b.RGBA)
+	}
+	panic("invalid property")
+}
+
+func (b bColor) Adjust(prop cprop8, adj int) bColor {
+	val := int(b.Access(prop)) + adj
+	if val < 0 {
+		val = 0
+	} else if val > 0xff {
+		val = 0xff
+	}
+	return b.SetProp(prop, uint8(val))
 }
 
 func Bcolor(c color.Color) bColor {
@@ -216,90 +247,83 @@ func first[T any](first T, _ ...any) T {
 	return first
 }
 
-func (t Theme) Select(mask uint64) Selection {
+func (cm CMask) Iter() []tcell.Color {
 	var sel []tcell.Color
 
-	fgMask := uint64(1 << 63)
-	bgMask := fgMask >> 1
-	restMask := ^uint64(0)
-
 	for c := Black; ; c++ {
-		if _, found := t[c]; !found {
-			break
-		}
-
-		off := uint64(c - Black)
-		if mask&(1<<off) != 0 {
+		if cm.Has(c) {
 			sel = append(sel, c)
 		}
 
-		restMask <<= 1
-		if (mask&restMask)%bgMask == 0 {
+		restMask := cm.Mask(Background) - cm.Mask(c)<<1
+		if cm&restMask == 0 {
 			break
 		}
 	}
 
-	if mask&fgMask != 0 {
+	if cm.Has(Foreground) {
 		sel = append(sel, Foreground)
 	}
-	if mask&bgMask != 0 {
+	if cm.Has(Background) {
 		sel = append(sel, Background)
 	}
 
-	return Selection{t, sel}
+	return sel
 }
 
-func (s Selection) Iter() []bColor {
-	var v []bColor
-	for _, c := range s.sel {
-		v = append(v, s.Theme[c])
+func (cm CMask) Has(color tcell.Color) bool {
+	return cm&cm.Mask(color) != 0
+}
+func (cm CMask) Index(color tcell.Color) int {
+	indx := int(color % (1 << 8))
+	if color&tcell.ColorSpecial != 0 {
+		return -indx
 	}
-	return v
+	return indx
+}
+func (cm CMask) IndexMod(mod int, color tcell.Color) int {
+	return (cm.Index(color) + mod) % mod
+}
+func (cm CMask) Mask(color tcell.Color) CMask {
+	return 1 << cm.IndexMod(64, color)
 }
 
-func (s Selection) Adjust(prop cprop8, adj int) Selection {
-	if adj == 0 || s.sel == nil {
-		return s
+func (cm CMask) Interval(c1, c2 tcell.Color) CMask {
+	cL, cH := c1, c2
+	if c2 < c1 {
+		cL, cH = c2, c1
+	}
+	return cm.Mask(cH)<<1 - cm.Mask(cL)
+}
+
+func (cm CMask) _Colors() CMask {
+	return cm.Interval(Red, Cyan)
+}
+func (cm CMask) BrightColors() CMask {
+	return cm.Interval(BrightRed, BrightCyan)
+}
+func (cm CMask) Colors() CMask {
+	return cm._Colors() | cm.BrightColors()
+}
+
+func (cm CMask) _Grays() CMask {
+	return cm.Mask(Black) | cm.Mask(White)
+}
+func (cm CMask) BrightGrays() CMask {
+	return cm.Mask(BrightBlack) | cm.Mask(BrightWhite)
+}
+func (cm CMask) Grays() CMask {
+	return cm._Grays() | cm.BrightGrays() | cm.Mask(Foreground) | cm.Mask(Background)
+}
+
+func (t Theme) Adjust(cm CMask, prop cprop8, adj int) Theme {
+	if adj == 0 || cm == 0 {
+		return t
 	}
 
-	for _, c := range s.sel {
-		b := s.Theme[c]
-
-		var ptr *uint8
-		switch prop {
-		case Y:
-			ptr = &b.Y
-		case U:
-			ptr = &b.Cb
-		case V:
-			ptr = &b.Cr
-		case R:
-			ptr = &b.R
-		case G:
-			ptr = &b.G
-		case B:
-			ptr = &b.B
-		}
-
-		// stupid simple
-		val := int(*ptr) + adj
-		if val < 0 {
-			*ptr = 0
-		} else if val > int(uint8(val)) {
-			*ptr = ^uint8(0)
-		} else {
-			*ptr = uint8(val)
-		}
-
-		switch prop {
-		case Y, U, V:
-			b.Set(b.YCbCr)
-		case R, G, B:
-			b.Set(b.RGBA)
-		}
-
-		s.Theme[c] = b
+	for _, color := range cm.Iter() {
+		t[color] = t[color].Adjust(prop, adj)
 	}
 
-	return s
+	return t
 }

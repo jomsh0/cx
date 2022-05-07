@@ -4,46 +4,129 @@ import (
 	"fmt"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	//"log"
 	"strings"
 )
 
+type Padding struct {
+	t int
+	b int
+	l int
+	r int
+}
+
 type Control struct {
 	*tview.Box
-	C    *Console
+	C        *Console
+	padding  Padding
+	title    string
+	b_title  string
+	b_off    int
+	b_border bool
+}
+
+type CtlTweaker struct {
+	*Control
 	prop cprop8
 }
 
-func (c *Control) Init(C *Console, prop cprop8) *Control {
-	b := tview.NewBox().
-		SetBorder(true).
-		SetTitle("[ [::b]" + prop.String() + "[::-] ]").
-		SetDrawFunc(func(screen tcell.Screen, x, y, w, h int) (int, int, int, int) {
-			return x + 1, y + 1, w - 2, h - 2
-		})
-
-	*c = Control{b, C, prop}
-	return c
+func (ctl *Control) Init(C *Console, title string) *Control {
+	if ctl == nil {
+		ctl = new(Control)
+	}
+	ctl.C = C
+	ctl.title = title
+	ctl.Box = tview.NewBox()
+	return ctl
 }
 
-func (c *Control) drawGrid(screen tcell.Screen) (int, int, int, int) {
-	if !c.HasFocus() {
-		c.SetBorder(false)
+func (ctl *Control) setTitle() {
+	if !ctl.HasFocus() {
+		ctl.Box.SetTitle(" " + ctl.title + " ")
 	} else {
-		c.SetBorder(true)
+		ctl.Box.SetTitle("[ [::b]" + ctl.title + "[::-] ]")
 	}
-	c.DrawForSubclass(screen, c)
+}
 
-	x, y, w, h := c.GetInnerRect()
-	w -= 1
-	x_mid := x + w/2
+func (ctl *Control) SetBlurBorder(b_border bool) *Control {
+	ctl.b_border = b_border
+	return ctl
+}
+
+func (ctl *Control) SetBlurTitle(b_title string, b_off int) *Control {
+	ctl.b_title = b_title
+	ctl.b_off = b_off
+	return ctl
+}
+
+func (ctl *Control) SetBorderPadding(t, b, l, r int) *Control {
+	ctl.padding = Padding{t, b, l, r}
+	return ctl
+}
+
+// Always return the same InnerRect whether or not borders are drawn
+func (ctl *Control) GetInnerRect() (int, int, int, int) {
+	x, y, w, h := ctl.Box.GetRect()
+	x += ctl.padding.l + 1
+	y += ctl.padding.t + 1
+	w -= ctl.padding.l + ctl.padding.r + 2
+	h -= ctl.padding.t + ctl.padding.b + 2
+
+	return x, y, w, h
+}
+
+func (ctl *Control) drawBlurTitle(screen tcell.Screen) {
+	roos := []rune(ctl.b_title)
+	if len(roos) == 0 {
+		return
+	}
+
+	x, y, w, h := ctl.GetRect()
+	y_mid := y + h/2
+	y_off := ctl.b_off
+	if y_off < 0 {
+		y_off += y_mid
+	} else {
+		y_off += y
+	}
+
+	lpad := (w - len(roos)) / 2
+	for i, ru := range roos {
+		screen.SetContent(x+lpad+i, y_off, ru, nil, tcell.StyleDefault.Underline(false))
+	}
+}
+
+// Only draw borders when in focus
+func (ctl *Control) DrawForSubclass(screen tcell.Screen, p tview.Primitive) {
+	var b_attr tcell.AttrMask
+	if !ctl.HasFocus() {
+		b_attr = tcell.AttrDim
+	}
+	ctl.SetBorder(ctl.b_border || ctl.HasFocus()).
+		SetBorderAttributes(b_attr)
+	ctl.setTitle()
+
+	ctl.Box.DrawForSubclass(screen, p)
+	if !ctl.HasFocus() {
+		ctl.drawBlurTitle(screen)
+	}
+}
+
+func (tw *CtlTweaker) Init(C *Console, prop cprop8) *CtlTweaker {
+	tw.Control = new(Control).
+		Init(C, prop.String()).
+		SetBlurTitle("[ "+prop.Abbr()+" ]", -2).
+		SetBorderPadding(0, 0, 1, 1)
+	tw.prop = prop
+	return tw
+}
+
+func (tw *CtlTweaker) drawGrid(screen tcell.Screen) (int, int, int, int) {
+	x, y, w, h := tw.GetInnerRect()
 	y_mid := y + h/2
 
 	midline := strings.Repeat(string(tview.BoxDrawingsLightDoubleDashHorizontal), w)
 	tview.PrintSimple(screen, "[::d]"+midline, x, y_mid)
-
-	if !c.HasFocus() {
-		tview.PrintSimple(screen, "[::d]"+c.prop.Abbr(), x_mid, y_mid-2)
-	}
 
 	mark_dn := string(tview.BoxDrawingsLightDownAndHorizontal)
 	mark_up := string(tview.BoxDrawingsLightUpAndHorizontal)
@@ -55,7 +138,7 @@ func (c *Control) drawGrid(screen tcell.Screen) (int, int, int, int) {
 			tview.PrintSimple(screen, "[::d]"+mark_up, x+x_off, y_mid)
 		}
 
-		if i%2 == 0 && c.HasFocus() {
+		if i%2 == 0 && tw.HasFocus() {
 			xpos := x + x_off - 1
 			label := fmt.Sprintf("%d", i*32)
 			switch i {
@@ -76,21 +159,24 @@ func (c *Control) drawGrid(screen tcell.Screen) (int, int, int, int) {
 	return x, y, w, h
 }
 
-func (c *Control) Draw(screen tcell.Screen) {
-	x, y, w, h := c.drawGrid(screen)
-	//x_mid := x + w/2
+func (tw *CtlTweaker) Draw(screen tcell.Screen) {
+	tw.Control.DrawForSubclass(screen, tw)
+	x, y, w, h := tw.drawGrid(screen)
 	y_mid := y + h/2
-	S := c.C.S
 
+	// keep track of positions of already-drawn markers to detect collisions
 	model := make([]tcell.Color, w)
-	for _, color := range S.sel {
-		b := S.Theme[color]
-		v := b.Access(c.prop)
+	theme := tw.C.Theme()
+
+	for _, color := range tw.C.Selection() {
+		b := theme[color]
+		v := b.Access(tw.prop)
 
 		off := int(v) * w / 255
 		if off == w {
 			off--
 		}
+		// attempt to spread out collisions into adjacent cells
 		for i := 0; i <= 3; i++ {
 			if off-i >= 0 && model[off-i] == 0 {
 				off -= i
@@ -104,22 +190,21 @@ func (c *Control) Draw(screen tcell.Screen) {
 		model[off] = color
 
 		ch, _, st, _ := screen.GetContent(x+off, y_mid)
-		if b.RGBA == S.Theme[Background].RGBA {
-			ch = '▒' //▒ ░
+		// background color requires special handling
+		if b.RGBA == theme[Background].RGBA {
+			ch = '▒' //▒ ░ █
 			color = tcell.ColorDefault
-		}
-		if c.HasFocus() {
-			st = st.Background(color)
 		} else {
-			ch = '░'
-			st = st.Dim(true).Foreground(color)
+			ch = '█'
 		}
+
+		st = st.Foreground(color).Dim(!tw.HasFocus())
 		screen.SetContent(x+off, y_mid, ch, nil, st)
 	}
 }
 
-func (c *Control) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
-	return c.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+func (tw *CtlTweaker) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return tw.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 
 		mod := event.Modifiers()
 		p_adj := 0 //property adjust
@@ -156,93 +241,185 @@ func (c *Control) InputHandler() func(event *tcell.EventKey, setFocus func(p tvi
 			p_adj *= 3
 		}
 
-		c.adjust(p_adj)
+		tw.C.Adjust(tw.prop, p_adj)
 	})
 }
 
-func (c *Control) adjust(adj int) {
-	c.C.S.Adjust(c.prop, adj)
-	c.C.S.SetTheme()
+type Lmodel struct {
+	tcell.Color
+	string
+}
+
+type CtlSelector struct {
+	*Control
+	mask   CMask
+	model  []Lmodel
+	curcol int
+}
+
+func (cs *CtlSelector) Init(C *Console) *CtlSelector {
+	cs.Control = new(Control).
+		Init(C, "selection").
+		SetBlurTitle("[ selection ]", 0).
+		//SetBlurBorder(true).
+		SetBorderPadding(1, 1, 1, 1)
+
+	cols := len(C.theme)
+	cs.model = make([]Lmodel, cols)
+
+	for color := range C.theme {
+		name, found := cNames[color]
+		if !found {
+			name.abbr = fmt.Sprintf("%v", CMask(0).Index(color))
+		}
+
+		col := int(CMask(0).IndexMod(cols, color))
+		cs.model[col] = Lmodel{color, name.abbr}
+	}
+
+	return cs.Reset()
+}
+
+func (cs *CtlSelector) Left() *CtlSelector {
+	cs.curcol--
+	if cs.curcol < 0 {
+		cs.curcol = len(cs.model) + cs.curcol
+	}
+	return cs
+}
+
+func (cs *CtlSelector) Right() *CtlSelector {
+	cs.curcol = (cs.curcol + 1) % len(cs.model)
+	return cs
+}
+
+func (cs *CtlSelector) Pick() *CtlSelector {
+	return cs.Toggle(CMask(0).Mask(cs.model[cs.curcol].Color))
+}
+
+func (cs *CtlSelector) Reset() *CtlSelector {
+	cs.mask = CMask(0).Colors()
+	return cs
+}
+
+func (cs *CtlSelector) Toggle(mask CMask) *CtlSelector {
+	if cs.mask&mask == mask {
+		cs.mask ^= mask
+	} else {
+		cs.mask |= mask
+	}
+	return cs
+}
+
+func (cs *CtlSelector) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return cs.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		//mod := event.Modifiers()
+		key := event.Key()
+
+		if key == tcell.KeyRune {
+			rune := event.Rune()
+			switch rune {
+			case 'H', 'h':
+				cs.Left()
+			case 'L', 'l':
+				cs.Right()
+			case ' ':
+				cs.Pick()
+			case 'c':
+				cs.Toggle(CMask(0).Colors())
+			}
+			return
+		}
+
+		switch key {
+		case tcell.KeyCtrlL, tcell.KeyRight:
+			cs.Right()
+		case tcell.KeyCtrlH, tcell.KeyLeft:
+			cs.Left()
+		case tcell.KeyEnter:
+			cs.Pick()
+		}
+	})
+}
+
+func (cs *CtlSelector) Draw(screen tcell.Screen) {
+	cs.DrawForSubclass(screen, cs)
+
+	x, y, w, h := cs.GetInnerRect()
+	y_c := y + h/2
+	y_l := y_c - 1
+	cols := len(cs.model)
+
+	var csize int
+	for csize = 6; csize > 2; csize-- {
+		if cols*csize <= w {
+			break
+		}
+	}
+	for col, mod := range cs.model {
+		selected := cs.mask.Has(mod.Color)
+
+		block := '█' //░
+
+		x_c := x + col*csize
+
+		roos := []rune(mod.string)
+		lpad := (csize - len(roos)) / 2
+
+		st_l := tcell.StyleDefault.Dim(!selected).Reverse(selected).Bold(selected)
+		st_c := tcell.StyleDefault.Foreground(mod.Color).Dim(!selected)
+		if cs.HasFocus() && col == cs.curcol {
+			st_l = st_l.Foreground(BrightBlue).Background(BrightWhite).Reverse(true).Bold(true).Dim(false)
+		}
+
+		for i := 0; i < csize; i++ {
+			ru := ' '
+			pos := i - lpad
+			if pos >= 0 && pos < len(roos) {
+				ru = roos[pos]
+			}
+
+			screen.SetContent(x_c+i, y_l, ru, nil, st_l)
+			screen.SetContent(x_c+i, y_c, block, nil, st_c)
+		}
+	}
 }
 
 type Console struct {
 	*tview.Flex
-	S       Selection
+	csel    *CtlSelector
+	theme   Theme
 	reset   Theme
 	focus_i int
-}
-
-var props = []cprop8{Y, U, V, R, G, B}
-
-type Selector struct {
-	*tview.Table
-	C *Console
-}
-
-func (s *Selector) Init(C *Console) *Selector {
-	T := tview.NewTable().SetSelectable(true, true)
-	for c := Black; c <= BrightWhite; c++ {
-		T.SetCell(0, int(c-Black), tview.NewTableCell(cNames[c].abbr).SetExpansion(1).SetAlign(tview.AlignCenter))
-		T.SetCell(1, int(c-Black), &tview.TableCell{Text: "", BackgroundColor: c})
-	}
-	T.SetTitle("Selection").
-		SetDrawFunc(func(screen tcell.Screen, x, y, w, h int) (int, int, int, int) {
-			return x + 1, y + 1, w - 2, h - 2
-		})
-
-	*s = Selector{T, C}
-	return s
-}
-
-func (s *Selector) Draw(screen tcell.Screen) {
-	if !s.HasFocus() {
-		s.SetBorder(false)
-	} else {
-		s.SetBorder(true)
-	}
-	s.DrawForSubclass(screen, s)
-
-	s.Table.Draw(screen)
-
-	// x, y, w, h := s.GetInnerRect()
-	// y_mid := y + h/2
-
-	// for i, c := range s.C.S.sel {
-	// 	if i > w {
-	// 		break
-	// 	}
-	// 	st := tcell.StyleDefault
-	// 	switch c {
-	// 	case Foreground:
-	// 		st = st.Foreground(tcell.ColorDefault).Reverse(true)
-	// 	case Background:
-	// 		st = st.Background(tcell.ColorDefault)
-	// 	default:
-	// 		st = st.Background(c)
-	// 	}
-	// 	for j := 0; j < 3; j++ {
-	// 		screen.SetContent(x+3*i+j, y_mid, ' ', nil, st)
-	// 	}
-
-	// 	str := fmt.Sprintf(" %.3s", cNames[c].abbr)
-	// 	tview.PrintSimple(screen, str, x+3*i, y_mid-1)
-	// }
 }
 
 func (C *Console) Init(t Theme) *Console {
 	C.Flex = tview.NewFlex().
 		SetDirection(tview.FlexRow)
+
 	C.reset = t
 	C.Reset()
-	C.AddItem(new(Selector).Init(C), 0, 1, true)
-	for _, p := range props {
-		C.AddItem(new(Control).Init(C, p), 0, 1, true)
+
+	C.csel = new(CtlSelector).Init(C)
+	C.AddItem(C.csel, 0, 1, true)
+
+	for _, p := range []cprop8{Y, Cb, Cr, R, G, B} {
+		C.AddItem(new(CtlTweaker).Init(C, p), 0, 1, true)
 	}
 	return C
 }
 
+func (C *Console) Adjust(prop cprop8, adj int) Theme {
+	return C.theme.Adjust(C.csel.mask, prop, adj).Apply()
+}
+func (C *Console) Selection() []tcell.Color {
+	return C.csel.mask.Iter()
+}
+func (C *Console) Theme() Theme {
+	return C.theme
+}
 func (C *Console) Reset() *Console {
-	C.S = C.reset.Copy().Select(^uint64(0))
+	C.theme = C.reset.Copy()
 	return C
 }
 
@@ -267,8 +444,7 @@ func (C *Console) InputHandler() func(event *tcell.EventKey, setFocus func(p tvi
 		case tcell.KeyBacktab, tcell.KeyCtrlK, tcell.KeyUp:
 			f_i--
 		case tcell.KeyCtrlR:
-			C.Reset()
-			C.S.SetTheme()
+			C.Reset().Theme().Apply()
 			return
 		default:
 			C.GetItem(C.focus_i).InputHandler()(event, setFocus)

@@ -74,10 +74,10 @@ func parseTheme(theme string) Theme {
 	return make(Theme).From(t, fg, bg)
 }
 
-func (tm ThemeMap) SetTheme(theme string) {
+func (tm ThemeMap) Apply(theme string) Theme {
 	t, found := tm[theme]
 	if !found {
 		log.Fatalln("nonexistant theme", theme)
 	}
-	t.SetTheme()
+	return t.Apply()
 }

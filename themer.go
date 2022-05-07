@@ -133,7 +133,7 @@ func (t *Themer) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 			}
 
 			if theme, ok := t.GetTheme(); ok {
-				t.tm.SetTheme(theme)
+				t.tm.Apply(theme)
 			}
 		}
 

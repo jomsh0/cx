@@ -26,8 +26,8 @@ func main() {
 	themeMap := allThemes()
 	app := tview.NewApplication()
 	themer := NewThemer().init(themeMap)
-	preview := NewPreview().Start()
-	log.SetOutput(preview)
+	preview := new(Preview).Init().Start()
+	log.SetOutput(preview.log)
 	go func() {
 		cmd := exec.Command("bat", "-f", "--theme", "base16", "cx.go")
 		txt, err := cmd.Output()
@@ -42,16 +42,16 @@ func main() {
 		AddItem(themer, themer.Width+5, 0, true).
 		AddItem(preview, 0, 3, false)
 
-	themer.Done(func(theme string) {
-		preview.Cancel()
-		palette := themeMap[theme]
-		cons := new(Console).Init(palette)
+	themer.Done(func(tname string) {
+		preview.Stop()
+		theme := themeMap[tname]
+		cons := new(Console).Init(theme)
 		flex.Clear().
 			AddItem(cons, 0, 1, true).
 			AddItem(preview, 0, 1, false)
 
 		app.SetFocus(flex)
-		preview.Start()
+		//preview.Start()
 	})
 
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {
