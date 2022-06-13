@@ -11,6 +11,7 @@ type Themer struct {
 	*tview.Flex
 
 	tm       ThemeMap
+	cb       func(string)
 	list     *tview.List
 	refList  *tview.List
 	search   *tview.InputField
@@ -18,7 +19,7 @@ type Themer struct {
 	doneFunc func(string)
 }
 
-func NewThemer() *Themer {
+func (th *Themer) Init(tm ThemeMap, cb func(string)) *Themer {
 	list := tview.NewList().
 		ShowSecondaryText(false).
 		SetMainTextColor(tcell.ColorGray).
@@ -37,19 +38,19 @@ func NewThemer() *Themer {
 	search.SetBorderPadding(1, 0, 0, 0)
 	flex.SetBorderPadding(1, 1, 1, 1)
 
-	t := &Themer{Flex: flex, list: list, refList: refList, search: search}
+	*th = Themer{Flex: flex, list: list, refList: refList, search: search, cb: cb}
 
 	search.SetChangedFunc(func(text string) {
 		if text == "" {
-			t.resetList(nil)
+			th.resetList(nil)
 		} else if matches := refList.FindItems(text, "", false, true); matches != nil {
-			t.resetList(matches)
+			th.resetList(matches)
 		} else {
-			t.resetList([]int{})
+			th.resetList([]int{})
 		}
 	})
 
-	return t
+	return th.init(tm)
 }
 
 func simpleAdd(list *tview.List, theme string) {
@@ -134,6 +135,9 @@ func (t *Themer) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 
 			if theme, ok := t.GetTheme(); ok {
 				t.tm.Apply(theme)
+				if t.cb != nil {
+					t.cb(theme)
+				}
 			}
 		}
 

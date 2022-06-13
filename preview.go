@@ -1,10 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	//"log"
-	"fmt"
+	"log"
+	//"strings"
 	"time"
 )
 
@@ -12,6 +13,7 @@ const (
 	PM_LOG int = 0 + iota
 	PM_BARS
 	PM_RASTER
+	PM_SIZE
 )
 
 type Cell struct {
@@ -24,6 +26,7 @@ type Raster struct {
 	cancel  chan bool
 	done    chan bool
 	pending bool
+	reset   bool
 }
 
 type Preview struct {
@@ -40,9 +43,8 @@ type Preview struct {
 func (p *Preview) Init() *Preview {
 	p.Box = tview.NewBox().
 		SetBorder(true).
-		SetBorderPadding(1, 1, 1, 1).
 		SetBorderAttributes(tcell.AttrDim).
-		SetTitle("[ preview ]")
+		SetTitle("[::d][ preview ]")
 
 	p.log = tview.NewTextView()
 	p.log.Box = p.Box
@@ -50,6 +52,7 @@ func (p *Preview) Init() *Preview {
 	p.text = tview.NewTextView().SetDynamicColors(true)
 	p.text.Box = p.Box
 
+	p.raster = new(Raster).Init()
 	p.sample = make(chan []byte, 1)
 	return p
 }
@@ -121,15 +124,15 @@ func (rs *Raster) Draw(screen tcell.Screen, view *tview.Box, unitsz, msec int) {
 }
 
 func (p *Preview) Draw(screen tcell.Screen) {
+	p.SetBorderPadding(1, 1, 1, 1)
+
 	switch p.mode {
 	case PM_LOG:
 		p.log.Draw(screen)
 	case PM_BARS:
 		p.drawBars(screen)
 	case PM_RASTER:
-		if p.raster == nil {
-			p.raster = new(Raster).Init()
-		}
+	loop:
 		for {
 			select {
 			case s := <-p.sample:
@@ -137,26 +140,30 @@ func (p *Preview) Draw(screen tcell.Screen) {
 			case <-p.raster.done:
 				p.raster.pending = false
 			default:
-				break
+				break loop
 			}
 		}
-		if len(p.samples) > 0 {
+		if p.raster.pending {
+			break
+		}
+		if p.raster.rows == nil && len(p.samples) > 0 {
 			p.text.SetText(tview.TranslateANSI(string(p.samples[0])))
 			p.text.Draw(screen)
 			p.raster.Capture(screen, p.text.Box)
 			p.text.Clear()
 		}
-		if !p.raster.pending {
-			// blanks out content
-			p.text.DrawForSubclass(screen, p)
+		if p.raster.reset {
+			p.raster.reset = false
 			p.raster.pending = true
+			p.DrawForSubclass(screen, p)
 			go p.raster.Draw(screen, p.text.Box, 30, 20)
 		}
 	}
 }
 
 func (p *Preview) Stop() *Preview {
-	p.mode = 0
+	p.mode = PM_SIZE
+	p.raster.reset = false
 	if p.raster.pending {
 		p.raster.cancel <- true
 		<-p.raster.done
@@ -166,9 +173,12 @@ func (p *Preview) Stop() *Preview {
 }
 func (p *Preview) Start() *Preview {
 	p.mode = PM_RASTER
-	if p.raster == nil {
-		p.raster = new(Raster).Init()
-	}
+	p.raster.reset = true
+	return p
+}
+func (p *Preview) Rotate() *Preview {
+	p.Stop()
+	p.mode = (p.mode + 1) % PM_SIZE
 	return p
 }
 func (p *Preview) Bars(theme Theme) *Preview {
@@ -182,12 +192,17 @@ func (p *Preview) Bars(theme Theme) *Preview {
 func (p *Preview) Log() *Preview {
 	p.Stop()
 	p.mode = PM_LOG
+	log.Println("LOGGING")
 	return p
 }
 
+var NAME_WIDTH = 15
+
 func (p *Preview) drawBars(screen tcell.Screen) *Preview {
+	x, y, w, h := p.GetRect()
+	p.SetBorderPadding(0, 0, w/15, w/15)
+	x, y, w, h = p.GetInnerRect()
 	p.DrawForSubclass(screen, p)
-	x, y, w, h := p.GetInnerRect()
 
 	theme := p.theme
 	if theme == nil {
@@ -199,15 +214,30 @@ func (p *Preview) drawBars(screen tcell.Screen) *Preview {
 	}
 
 	count := len(theme)
+	var size int
+	for size = 5; size > 1; size-- {
+		if count*size < h {
+			break
+		}
+	}
+	y_off := (h - count*size) / 2
 
 	for color := range theme {
 		indx := CMask(0).IndexMod(len(theme), color)
-		y_off := indx * h / count
-		for j := 0; j < h/count; j++ {
-			str := fmt.Sprintf("%.*s", w, "█")
-			tview.Print(screen, str, x, y+y_off+j, w, tview.AlignLeft, color)
+		y_ind := y + y_off + indx*size
+
+		name := cNames[color].string
+		if name == "" {
+			name = fmt.Sprintf("color%d", indx)
+		}
+
+		tview.Print(screen, name, x, y_ind, NAME_WIDTH, tview.AlignRight, Foreground)
+		for j := 0; j < size; j++ {
+			for i := NAME_WIDTH + 2; i < w; i++ {
+				st := tcell.StyleDefault.Background(color).Reverse(color == Foreground)
+				screen.SetContent(x+i, y_ind+j, ' ', nil, st)
+			}
 		}
 	}
-
 	return p
 }
