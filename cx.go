@@ -39,8 +39,8 @@ func main() {
 	}()
 
 	flex := tview.NewFlex().
-		AddItem(themer, themer.Width+5, 0, true).
-		AddItem(preview, 0, 3, false)
+		AddItem(themer, themer.Width+5, 0, true)
+		//AddItem(preview, 0, 3, false)
 
 	themer.Done(func(tname string) {
 		preview.Stop()
